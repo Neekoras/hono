@@ -107,9 +107,13 @@ describe('JWT', () => {
   })
 
   it('JwtTokenNotBefore', async () => {
-    const tok =
-      'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE2NjQ2MDYzMzQsImV4cCI6MTY2NDYwOTkzNCwibmJmIjoiMzEwNDYwNjI2NCJ9.hpSDT_cfkxeiLWEpWVT8TDxFP3dFi27q1K7CcMcLXHc'
     const secret = 'a-secret'
+    const tok = await JWT.sign(
+      // @ts-expect-error - testing malformed payload (nbf must be number)
+      { iat: 1664606334, exp: 1664609934, nbf: '3104606264' },
+      secret,
+      AlgorithmTypes.HS256
+    )
     let err: JwtTokenNotBefore
     let authorized
     try {
@@ -120,6 +124,38 @@ describe('JWT', () => {
     // @ts-ignore
     expect(err).toEqual(new JwtTokenNotBefore(tok))
     expect(authorized).toBeUndefined()
+  })
+
+  describe('Signature is verified before the claims', () => {
+    // Until the signature is checked the payload is whatever the caller sent,
+    // so a forged token must not be answered with a claim error, and must not
+    // reach an `iss` or `aud` RegExp the application supplied.
+    const forge = (payload: object) => {
+      const encode = (o: object) =>
+        encodeBase64Url(utf8Encoder.encode(JSON.stringify(o)).buffer).replace(/=/g, '')
+      return `${encode({ alg: 'HS256', typ: 'JWT' })}.${encode(payload)}.aW52YWxpZA`
+    }
+
+    it.each([
+      ['expired', { exp: 1 }],
+      ['not yet valid', { nbf: 4102444800 }],
+      ['issued in the future', { iat: 4102444800 }],
+    ])('reports the bad signature, not that the token is %s', async (_name, payload) => {
+      const tok = forge(payload)
+      await expect(JWT.verify(tok, 'a-secret', AlgorithmTypes.HS256)).rejects.toEqual(
+        new JwtTokenSignatureMismatched(tok)
+      )
+    })
+
+    it('does not run an application-supplied iss RegExp on an unverified payload', async () => {
+      const tok = forge({ iss: 'https://evil.example' })
+      const iss = /^https:\/\//
+      const test = vi.spyOn(iss, 'test')
+      await expect(JWT.verify(tok, 'a-secret', { alg: AlgorithmTypes.HS256, iss })).rejects.toEqual(
+        new JwtTokenSignatureMismatched(tok)
+      )
+      expect(test).not.toHaveBeenCalled()
+    })
   })
 
   describe('JwtTokenNotBefore with malformed nbf claim', () => {

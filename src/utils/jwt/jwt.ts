@@ -127,6 +127,23 @@ export const verify = async (
   if (header.alg !== alg) {
     throw new JwtAlgorithmMismatch(alg, header.alg)
   }
+  // The signature is checked before the claims. Everything below this point
+  // reads the payload, and until the signature is verified the payload is
+  // whatever the caller sent. Checking claims first would run `iss` and `aud`,
+  // which an application may supply as a RegExp, against unauthenticated input,
+  // and would let the error distinguish claim state in a forged token.
+  const headerPayload = token.substring(0, token.lastIndexOf('.'))
+  let signature: Uint8Array<ArrayBuffer>
+  try {
+    signature = decodeBase64Url(tokenParts[2])
+  } catch {
+    throw new JwtTokenInvalid(token)
+  }
+  const verified = await verifying(publicKey, alg, signature, utf8Encoder.encode(headerPayload))
+  if (!verified) {
+    throw new JwtTokenSignatureMismatched(token)
+  }
+
   const now = Math.floor(Date.now() / 1000)
   if (nbf && payload.nbf !== undefined) {
     if (typeof payload.nbf !== 'number' || !Number.isFinite(payload.nbf) || payload.nbf > now) {
@@ -171,18 +188,6 @@ export const verify = async (
     if (!matched) {
       throw new JwtTokenAudience(aud, payload.aud)
     }
-  }
-
-  const headerPayload = token.substring(0, token.lastIndexOf('.'))
-  let signature: Uint8Array<ArrayBuffer>
-  try {
-    signature = decodeBase64Url(tokenParts[2])
-  } catch {
-    throw new JwtTokenInvalid(token)
-  }
-  const verified = await verifying(publicKey, alg, signature, utf8Encoder.encode(headerPayload))
-  if (!verified) {
-    throw new JwtTokenSignatureMismatched(token)
   }
 
   return payload
